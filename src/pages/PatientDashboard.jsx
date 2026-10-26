@@ -3,23 +3,15 @@ import { supabase } from "../supabaseClient";
 import ResultCard from "../components/ResultCard";
 import VisitTimeline from "../components/VisitTimeline";
 import { useVisits } from "../hooks/useVisits";
-import { filterCaseId, filterTc, validateCaseId, validateTc, firstError } from "../utils/validators";
-
-// Maps database error codes raised by link_case_with_tc to readable messages.
-function friendlyLinkError(message = "") {
-  if (message.includes("no_match"))          return "Case ID and T.C. Kimlik No do not match. Please check the details.";
-  if (message.includes("already_linked"))    return "This case is already linked to another patient account.";
-  if (message.includes("invalid_tc"))        return "Please enter a valid T.C. Kimlik No.";
-  if (message.includes("case_not_found"))    return "Case not found.";
-  if (message.includes("not_authenticated")) return "Your session has expired. Please log in again.";
-  if (message.includes("does not exist"))    return "Database functions are not installed (link_case_with_tc). Run the SQL setup first.";
-  return "Failed to link case. Please try again.";
-}
+import { filterTc, validateTc } from "../utils/validators";
+import { friendlyDbError } from "../utils/auth";
+import { conditionOf, CONDITIONS, ALZHEIMER_DATA, PATIENT_CARDS } from "../data/conditions";
 
 export default function PatientDashboard({ nav, session, data, toast }) {
+  const [cases, setCases]           = useState([]);        // every case linked to this patient
+  const [selectedId, setSelectedId] = useState(null);
   const [vis, setVis]               = useState(null);
-  const [linkedCase, setLinkedCase] = useState(null);
-  const [caseIdInput, setCaseIdInput] = useState("");
+  const [hasTc, setHasTc]           = useState(null);      // null = unknown (database functions missing)
   const [tcInput, setTcInput]       = useState("");
   const [linking, setLinking]       = useState(false);
   const [linkError, setLinkError]   = useState("");
@@ -29,50 +21,62 @@ export default function PatientDashboard({ nav, session, data, toast }) {
   ]);
   const [chatInput, setChatInput]   = useState("");
   const [loading, setLoading]       = useState(true);
-  const { visits } = useVisits(linkedCase?.id, { withResults: false });
+
+  const selectedCase = cases.find(c => c.id === selectedId) ?? cases[0] ?? null;
+  const condition    = conditionOf(selectedCase);
+  const isAlz        = condition === "alzheimer";
+  const { visits } = useVisits(selectedCase?.id, { withResults: false });
 
   useEffect(() => { if (session) loadPatientData(); }, [session]);
 
+  // Loads every case linked to this patient. First it links any new case that matches the T.C. the patient registered.
   const loadPatientData = async () => {
-    const { data: caseData } = await supabase
-      .from("cases").select("id, patient_name, scan_date, status")
-      .eq("patient_id", session.user.id)
-      .order("created_at", { ascending: false }).limit(1).single();
+    setLoading(true);
 
-    if (caseData) {
-      setLinkedCase(caseData);
-      const { data: visData } = await supabase
-        .from("patient_visibility").select("*").eq("case_id", caseData.id).single();
-      if (visData) setVis(visData);
-    }
+    const { error: syncErr } = await supabase.rpc("sync_my_cases");
+    if (syncErr) console.warn("sync_my_cases failed:", syncErr.message);
+
+    const { data: status, error: statusErr } = await supabase.rpc("get_my_tc_status");
+    setHasTc(statusErr ? null : !!status?.has_tc);
+
+    const { data: list, error: listErr } = await supabase
+      .from("cases").select("*")
+      .eq("patient_id", session.user.id)
+      .order("created_at", { ascending: false });
+    if (listErr) console.error("Failed to load cases:", listErr.message);
+
+    setCases(list ?? []);
     setLoading(false);
   };
 
-  const linkWithCaseId = async () => {
-    const input = caseIdInput.trim().toUpperCase();
-    const tc    = tcInput.trim();
-    const validationError = firstError(validateCaseId(input), validateTc(tc));
+  // What the doctor has released for the selected case.
+  useEffect(() => {
+    if (!selectedCase?.id) { setVis(null); return; }
+    let cancelled = false;
+    supabase.from("patient_visibility").select("*").eq("case_id", selectedCase.id).maybeSingle()
+      .then(({ data: visData }) => { if (!cancelled) setVis(visData ?? null); });
+    return () => { cancelled = true; };
+  }, [selectedCase?.id]);
+
+  // The patient enters their T.C. once; every matching case is linked automatically.
+  const registerTc = async () => {
+    const validationError = validateTc(tcInput);
     if (validationError) { setLinkError(validationError); return; }
     setLinking(true); setLinkError("");
 
-    // The database verifies Case ID + T.C. Kimlik No together and links the case to this account.
-    const { data: caseData, error: rpcErr } = await supabase.rpc("link_case_with_tc", { p_case_id: input, p_tc: tc });
-
-    if (rpcErr || !caseData) {
-      if (rpcErr) console.error("link_case_with_tc failed:", rpcErr.message);
-      setLinkError(friendlyLinkError(rpcErr?.message));
+    const { data: res, error: rpcErr } = await supabase.rpc("claim_tc_and_link", { p_tc: tcInput.trim() });
+    if (rpcErr) {
+      console.error("claim_tc_and_link failed:", rpcErr.message);
+      setLinkError(friendlyDbError(rpcErr.message));
       setLinking(false); return;
     }
     setTcInput("");   // do not keep the T.C. in memory longer than needed
-
-    // Load visibility
-    const { data: visData } = await supabase
-      .from("patient_visibility").select("*").eq("case_id", input).single();
-
-    setLinkedCase(caseData);
-    if (visData) setVis(visData);
+    await loadPatientData();
     setLinking(false);
-    toast.success("Case linked!", "Your MRI results are now available.");
+
+    const n = res?.linked ?? 0;
+    if (n > 0) toast.success("Cases linked!", `${n} case${n > 1 ? "s were" : " was"} linked to your account automatically.`);
+    else toast.success("T.C. Kimlik No saved", "Your results will appear automatically once your doctor adds your scan.");
   };
 
   const faqResponses = {
@@ -82,6 +86,10 @@ export default function PatientDashboard({ nav, session, data, toast }) {
     "treatment":    "Treatment options depend on many factors. Your doctor will review results and recommend the best plan.",
     "mri":          "MRI creates detailed brain pictures without radiation. It's a non-invasive, safe scan.",
     "grade":        "Tumor grade describes how abnormal the cells look and how fast they may grow.",
+    "alzheimer":    "Alzheimer's disease is a condition that gradually affects memory and thinking. Your doctor is the best person to explain what your results mean for you.",
+    "hippocampus":  "The hippocampus is a brain area that is important for forming new memories. Its size is one of the measurements the AI looks at.",
+    "memory":       "Changes in memory-related brain areas can be seen on MRI. Your doctor will explain what your scan means.",
+    "stage":        "The stage describes how far changes have progressed. Your doctor will explain what this means for you.",
   };
 
   const sendMessage = () => {
@@ -104,97 +112,97 @@ export default function PatientDashboard({ nav, session, data, toast }) {
         .filter(k => vis[k]).length
     : 0;
 
-  // No case linked yet — show Case ID entry
-  if (!linkedCase) return (
+  // No case linked yet.
+  if (!selectedCase) return (
     <div className="page">
       <div className="page-header">
-        <div><h2>My MRI Results</h2><p className="subtitle">Enter your Case ID and T.C. Kimlik No to view your results</p></div>
+        <div><h2>My MRI Results</h2><p className="subtitle">Your results appear here automatically</p></div>
       </div>
       <div style={{ maxWidth: 480, margin: "40px auto" }}>
         <div className="card">
-          <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{ textAlign: "center", marginBottom: 24 }}>
             <div style={{
               width: 64, height: 64, borderRadius: "50%",
               background: "var(--accent-dim)", border: "2px solid var(--accent-mid)",
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 28, margin: "0 auto 16px", color: "var(--accent)"
-            }}>🏥</div>
+            }}>{hasTc ? "⏳" : "🪪"}</div>
             <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>
-              Link Your MRI Case
+              {hasTc ? "No results yet" : "Enter your T.C. Kimlik No"}
             </h3>
             <p style={{ color: "var(--text-muted)", fontSize: 14, lineHeight: 1.6 }}>
-              Your doctor will give you a Case ID after your MRI analysis is complete.
-              Enter it below together with your T.C. Kimlik No to access your results.
+              {hasTc
+                ? "Your T.C. Kimlik No is registered. As soon as your doctor adds your MRI, it is linked to your account automatically and shows up here."
+                : "Enter your T.C. Kimlik No once. Every MRI case your doctor has saved for you is linked to your account automatically, including future ones."}
             </p>
           </div>
 
-          <div className="form-group">
-            <label>Case ID</label>
-            <input
-              type="text"
-              placeholder="e.g. C928348"
-              value={caseIdInput}
-              onChange={e => { setCaseIdInput(filterCaseId(e.target.value)); setLinkError(""); }}
-              onKeyDown={e => e.key === "Enter" && linkWithCaseId()}
-              autoComplete="off"
-              style={{ textAlign: "center", fontSize: 20, fontFamily: "var(--mono)", letterSpacing: 2, fontWeight: 700 }}
-            />
-          </div>
+          {hasTc ? (
+            <button className="btn-primary full-width" onClick={loadPatientData}>↻ Check for new results</button>
+          ) : (
+            <>
+              <div className="form-group">
+                <label>T.C. Kimlik No</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="11-digit T.C. Kimlik No"
+                  value={tcInput}
+                  onChange={e => { setTcInput(filterTc(e.target.value)); setLinkError(""); }}
+                  onKeyDown={e => e.key === "Enter" && registerTc()}
+                  style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--mono)", letterSpacing: 2 }}
+                />
+              </div>
 
-          <div className="form-group">
-            <label>T.C. Kimlik No</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="11-digit T.C. Kimlik No"
-              value={tcInput}
-              onChange={e => { setTcInput(filterTc(e.target.value)); setLinkError(""); }}
-              onKeyDown={e => e.key === "Enter" && linkWithCaseId()}
-              style={{ textAlign: "center", fontSize: 18, fontFamily: "var(--mono)", letterSpacing: 2 }}
-            />
-          </div>
+              {linkError && (
+                <div className="auth-error" style={{ marginBottom: 16 }}>⚠ {linkError}</div>
+              )}
 
-          {linkError && (
-            <div className="auth-error" style={{ marginBottom: 16 }}>⚠ {linkError}</div>
+              <button className="btn-primary full-width" onClick={registerTc} disabled={linking}>
+                {linking ? "Linking…" : "Link My Results →"}
+              </button>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 14, textAlign: "center", lineHeight: 1.6 }}>
+                Your T.C. Kimlik No is stored securely and is only used to match your cases. It cannot be changed afterwards.
+              </p>
+            </>
           )}
-
-          <button className="btn-primary full-width" onClick={linkWithCaseId} disabled={linking}>
-            {linking ? "Linking…" : "Access My Results →"}
-          </button>
-
-          <div style={{
-            marginTop: 20, padding: "12px 16px",
-            background: "var(--bg-alt)", borderRadius: "var(--radius)",
-            border: "1px solid var(--border)"
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>
-              Where do I find my Case ID?
-            </div>
-            <ul style={{ fontSize: 13, color: "var(--text-muted)", paddingLeft: 18, margin: 0, lineHeight: 1.8 }}>
-              <li>Your doctor will provide it after uploading your MRI scans</li>
-              <li>It starts with the letter C followed by numbers (e.g. C928348)</li>
-              <li>Contact your doctor if you haven't received it yet</li>
-            </ul>
-          </div>
         </div>
       </div>
     </div>
   );
+
+  const cond      = CONDITIONS[condition];
+  const cards     = PATIENT_CARDS[condition];
+  const alz       = ALZHEIMER_DATA;
+  const confidence = isAlz ? alz.probabilities[0].value : data?.probabilities?.[0]?.value;
+  const xai       = isAlz ? alz.xaiFeatures : data?.xaiFeatures;
 
   return (
     <div className="page">
       <div className="page-header">
         <div><h2>My MRI Results</h2><p className="subtitle">A simplified overview of your brain scan analysis</p></div>
         <div style={{
-          display: "flex", alignItems: "center", gap: 8,
+          display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
           background: "var(--accent-dim)", border: "1px solid var(--accent-mid)",
           borderRadius: "var(--radius)", padding: "6px 14px", fontSize: 13
         }}>
-          <span style={{ color: "var(--text-muted)" }}>Case</span>
-          <code style={{ fontFamily: "var(--mono)", fontWeight: 700, color: "var(--accent-dark)" }}>
-            {linkedCase.id}
-          </code>
+          <span className={`badge ${cond.badge}`}>{cond.icon} {cond.short}</span>
+          {cases.length > 1 ? (
+            <select value={selectedCase.id} onChange={e => setSelectedId(e.target.value)}
+              style={{ padding: "4px 8px", fontSize: 13, width: "auto" }}>
+              {cases.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.id} · {c.scan_date ?? "—"} · {CONDITIONS[conditionOf(c)].short}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <>
+              <span style={{ color: "var(--text-muted)" }}>Case</span>
+              <code style={{ fontFamily: "var(--mono)", fontWeight: 700, color: "var(--accent-dark)" }}>{selectedCase.id}</code>
+            </>
+          )}
         </div>
       </div>
 
@@ -219,27 +227,26 @@ export default function PatientDashboard({ nav, session, data, toast }) {
 
       {visibleCount > 0 && (
         <div className="patient-results-grid">
-          {vis?.scan_findings            && <ResultCard icon="🧠" title="Scan Findings"            text="An abnormal region was detected in your MRI scan. The AI has analyzed this region to help your medical team." />}
-          {vis?.growth_pattern           && <ResultCard icon="📈" title="Growth Pattern"           text="Based on imaging features, the detected region may belong to a faster-developing group. Your doctor will discuss this." />}
-          {vis?.treatment_considerations && <ResultCard icon="💊" title="Treatment Considerations" text="Some treatments may be more or less effective based on imaging findings. Your doctor will outline the best options." />}
-          {vis?.surgical_assessment      && <ResultCard icon="🏥" title="Surgical Assessment"      text="A significant portion of the affected area may be accessible for surgical intervention. Your team will evaluate this." />}
-          {vis?.next_steps               && <ResultCard icon="⏳" title="Next Steps"               text="Your doctor will explain everything in your upcoming consultation. Please attend all scheduled appointments." />}
+          {Object.entries(cards).map(([key, c]) => vis?.[key] && (
+            <ResultCard key={key} icon={c.icon} title={c.title} text={c.text} />
+          ))}
         </div>
       )}
 
-      {vis?.tumor_type && data && (
+      {vis?.tumor_type && (isAlz || data) && (
         <div className="card patient-clinical-card">
-          <h3>🔬 Tumor Classification</h3>
-          <p className="hint">The AI system identified the following tumor type:</p>
+          <h3>{isAlz ? "🧩 Diagnosis & Stage" : "🔬 Tumor Classification"}</h3>
+          <p className="hint">{isAlz ? "The AI system suggests the following:" : "The AI system identified the following tumor type:"}</p>
           <div className="patient-tumor-display">
-            <span className="patient-tumor-name">{data.tumorType}</span>
-            <span className="patient-tumor-conf">{data.probabilities[0].value}% AI confidence</span>
+            <span className="patient-tumor-name">{isAlz ? alz.diagnosis : data.tumorType}</span>
+            <span className="patient-tumor-conf">{confidence}% AI confidence</span>
           </div>
+          {isAlz && <p style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 10 }}>Estimated stage: <strong>{alz.stage}</strong></p>}
           <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 12 }}>Your doctor will confirm and explain this result.</p>
         </div>
       )}
 
-      {vis?.survival_estimate && data && (
+      {!isAlz && vis?.survival_estimate && data && (
         <div className="card patient-clinical-card patient-sensitive-card">
           <h3>⏳ Prognosis Information</h3>
           <p className="hint">A statistical estimate based on imaging data. Individual outcomes vary widely.</p>
@@ -248,23 +255,27 @@ export default function PatientDashboard({ nav, session, data, toast }) {
         </div>
       )}
 
-      {vis?.clinical_markers && data && (
+      {vis?.clinical_markers && (isAlz || data) && (
         <div className="card patient-clinical-card">
-          <h3>🧬 Biological Markers</h3>
-          <p className="hint">Genetic and molecular markers from your scan analysis:</p>
+          <h3>{isAlz ? "🧬 Brain Biomarkers" : "🧬 Biological Markers"}</h3>
+          <p className="hint">{isAlz ? "Measurements taken from your scan:" : "Genetic and molecular markers from your scan analysis:"}</p>
           <div className="patient-markers-grid">
-            <div className="patient-marker"><span>Grade</span><strong>{data.grade}</strong></div>
-            <div className="patient-marker"><span>IDH Status</span><strong>{data.idh}</strong></div>
-            <div className="patient-marker"><span>MGMT Promoter</span><strong>{data.mgmt}</strong></div>
+            {isAlz
+              ? alz.markers.map((m, i) => <div key={i} className="patient-marker"><span>{m.label}</span><strong>{m.value}</strong></div>)
+              : (<>
+                  <div className="patient-marker"><span>Grade</span><strong>{data.grade}</strong></div>
+                  <div className="patient-marker"><span>IDH Status</span><strong>{data.idh}</strong></div>
+                  <div className="patient-marker"><span>MGMT Promoter</span><strong>{data.mgmt}</strong></div>
+                </>)}
           </div>
         </div>
       )}
 
-      {vis?.xai_explanation && data && (
+      {vis?.xai_explanation && xai && (
         <div className="card patient-clinical-card">
           <h3>🤖 How the AI Made Its Decision</h3>
           <p className="hint">Factors the AI considered when analyzing your scan:</p>
-          {data.xaiFeatures.map((f, i) => (
+          {xai.map((f, i) => (
             <div key={i} className="xai-row">
               <span className="xai-label">{f.name}</span>
               <div className="xai-bar-bg"><div className="xai-bar-fill" style={{ width: `${f.importance}%` }} /></div>
@@ -304,4 +315,3 @@ export default function PatientDashboard({ nav, session, data, toast }) {
     </div>
   );
 }
-

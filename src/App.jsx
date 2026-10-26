@@ -233,6 +233,7 @@ import DoctorDashboard from "./pages/DoctorDashboard";
 import PatientDashboard from "./pages/PatientDashboard";
 import ProfilePage from "./pages/ProfilePage";
 import { REQUIRE_DOCTOR_APPROVAL } from "./utils/featureFlags";
+import { isGoogleSession, takeLoginIntent } from "./utils/auth";
 
 function App() {
   const [page, setPage] = useState("login");
@@ -295,6 +296,9 @@ function App() {
         let data = null;
         let error = null;
 
+        // Doctor / Patient choice made on the login page (null when restoring an existing session).
+        const chosenRole = takeLoginIntent();
+
         // Retry briefly in case a profile insert is still completing.
         for (let i = 0; i < 3; i++) {
           const result = await supabase
@@ -347,6 +351,33 @@ function App() {
           }
 
           return;
+        }
+
+        // The account type chosen on the login page must match the account.
+        if (chosenRole && chosenRole !== data.role) {
+          await supabase.auth.signOut();
+          setUserProfile(null);
+          setPage("login");
+          toast.error(
+            "Wrong account type",
+            `This is a ${data.role} account. Choose "${data.role === "doctor" ? "Doctor" : "Patient"}" on the login page and try again.`
+          );
+          return;
+        }
+
+        // "Continue with Google" is for patients only. A doctor must log in with email and password.
+        if (data.role === "doctor") {
+          const { data: { session: current } } = await supabase.auth.getSession();
+          if (isGoogleSession(current)) {
+            await supabase.auth.signOut();
+            setUserProfile(null);
+            setPage("login");
+            toast.error(
+              "Use email and password",
+              "Google sign-in is for patients only. Doctors log in with their email and password."
+            );
+            return;
+          }
         }
 
         // A doctor must be approved before accessing the doctor area.
@@ -473,8 +504,9 @@ function App() {
     }
   }, [userProfile, session]);
 
+  // Returns { ok, message } so the Refresh button can show whether it worked.
   const fetchCases = async () => {
-    if (!session?.user?.id) return;
+    if (!session?.user?.id) return { ok: false, message: "You are not signed in." };
 
     const { data, error } = await supabase
       .from("cases")
@@ -482,11 +514,12 @@ function App() {
       .eq("doctor_id", session.user.id)
       .order("created_at", { ascending: false });
 
-    if (!error && data) {
-      setCases(data);
-    } else if (error) {
+    if (error) {
       console.error("Failed to load cases:", error.message);
+      return { ok: false, message: error.message };
     }
+    setCases(data ?? []);
+    return { ok: true };
   };
 
   // Load visibility when a case is selected.
@@ -599,7 +632,13 @@ function App() {
         )}
 
         {page === "profile" && userProfile && (
-          <ProfilePage userProfile={userProfile} onLogout={handleLogout} />
+          <ProfilePage
+            userProfile={userProfile}
+            session={session}
+            onLogout={handleLogout}
+            onProfileUpdated={setUserProfile}
+            toast={toast}
+          />
         )}
 
         {page === "doctorSelect" && (
@@ -659,4 +698,3 @@ function App() {
 }
 
 export default App;
-

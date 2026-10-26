@@ -1,14 +1,11 @@
 
 import { useState } from "react";
 import { supabase } from "../supabaseClient";
-import CityHospitalFields from "../components/CityHospitalFields";
-import { REQUIRE_DOCTOR_APPROVAL } from "../utils/featureFlags";
 import { filterName, validateName, firstError, joinName, splitFullName } from "../utils/validators";
 
 export default function CompleteGoogleProfile({
   session,
   nav,
-  toast,
   onComplete,
 }) {
   const user = session?.user;
@@ -22,21 +19,10 @@ export default function CompleteGoogleProfile({
 
   const [firstName, setFirstName] = useState(filterName(initialFirst));
   const [lastName, setLastName] = useState(filterName(initialLast));
-  const [role, setRole] = useState("patient");
-  const [city, setCity] = useState("");
-  const [hospital, setHospital] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const email = user?.email ?? "";
-
-  // Switching role clears the doctor-only fields (same as the mobile app).
-  const changeRole = (next) => {
-    setRole(next);
-    setCity("");
-    setHospital("");
-    setError("");
-  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -48,9 +34,7 @@ export default function CompleteGoogleProfile({
 
     const validationError = firstError(
       validateName(firstName, "First name"),
-      validateName(lastName, "Last name"),
-      role === "doctor" && !city ? "Please select your city." : null,
-      role === "doctor" && !hospital.trim() ? "Please enter your hospital." : null
+      validateName(lastName, "Last name")
     );
     if (validationError) {
       setError(validationError);
@@ -65,11 +49,8 @@ export default function CompleteGoogleProfile({
         id: user.id,
         email,
         full_name: joinName(firstName, lastName),
-        role,
-        city: role === "doctor" ? city : null,
-        hospital: role === "doctor" ? hospital.trim() : null,
+        role: "patient",   // Google sign-in is for patients only; doctors register with email and password
         password_hash: "managed_by_supabase_auth",
-        doctor_verified: !REQUIRE_DOCTOR_APPROVAL,
       };
 
       const { data: profile, error: insertError } =
@@ -80,19 +61,6 @@ export default function CompleteGoogleProfile({
           .single();
 
       if (insertError) throw insertError;
-
-      if (REQUIRE_DOCTOR_APPROVAL && role === "doctor") {
-        // A new doctor must not enter the doctor dashboard.
-        await supabase.auth.signOut();
-
-        toast.success(
-          "Application submitted",
-          "Your doctor account is awaiting administrator approval."
-        );
-
-        nav("login");
-        return;
-      }
 
       onComplete(profile);
     } catch (err) {
@@ -134,7 +102,11 @@ export default function CompleteGoogleProfile({
 
         <p style={{ color: "var(--text-muted)", fontSize: 14 }}>
           You're signed in with Google. Complete the details below
-          to continue.
+          to create your patient account.
+        </p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+          Google sign-in is for patients only. Doctors register with
+          their email and password.
         </p>
 
         {error && (
@@ -180,48 +152,6 @@ export default function CompleteGoogleProfile({
               disabled
             />
           </div>
-
-          <div className="role-toggle">
-            <button
-              type="button"
-              className={role === "patient" ? "active" : ""}
-              disabled={loading}
-              onClick={() => changeRole("patient")}
-            >
-              Patient
-            </button>
-            <button
-              type="button"
-              className={role === "doctor" ? "active" : ""}
-              disabled={loading}
-              onClick={() => changeRole("doctor")}
-            >
-              Doctor
-            </button>
-          </div>
-
-          {role === "doctor" && (
-            <>
-              <CityHospitalFields
-                city={city}
-                hospital={hospital}
-                onChange={(c, h) => { setCity(c); setHospital(h); setError(""); }}
-              />
-
-              {REQUIRE_DOCTOR_APPROVAL && (
-                <p
-                  style={{
-                    fontSize: 13,
-                    color: "var(--text-muted)",
-                    marginBottom: 16,
-                  }}
-                >
-                  Doctor accounts require administrator approval
-                  before access to the doctor area is granted.
-                </p>
-              )}
-            </>
-          )}
 
           <button
             type="submit"

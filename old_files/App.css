@@ -786,17 +786,32 @@ button { font-family: var(--font); cursor: pointer; transition: all 0.15s; }
   margin-bottom: 8px;
 }
 
-.sidebar-avatar {
-  width: 34px; height: 34px;
+.sidebar-user[role="button"] { cursor: pointer; }
+.sidebar-user[role="button"]:hover { background: var(--bg-alt); }
+
+/* Profile picture (initial in a circle) */
+.avatar {
   border-radius: 50%;
   background: var(--accent-dim);
   border: 2px solid var(--accent-mid);
   color: var(--accent-dark);
   font-weight: 800;
-  font-size: 14px;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+  user-select: none;
 }
+
+/* Profile page */
+.profile-wrap { max-width: 480px; margin: 24px auto; }
+.profile-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 24px; }
+.profile-name { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; color: var(--text-primary); margin: 4px 0 0; text-align: center; }
+.profile-info { padding: 18px; }
+.profile-divider { border: 0; border-top: 1px solid var(--border-light); margin: 14px 0; }
+.profile-row { display: flex; align-items: flex-start; gap: 12px; }
+.profile-row-label { width: 80px; flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-muted); padding-top: 2px; }
+.profile-row-value { flex: 1; text-align: right; font-size: 13.5px; font-weight: 600; color: var(--text-primary); word-break: break-word; }
+.profile-logout { width: 100%; margin-top: 20px; color: var(--danger); border-color: rgba(192,57,43,0.25); }
+.profile-logout:hover { background: var(--danger-dim); color: var(--danger); border-color: rgba(192,57,43,0.25); }
 
 .sidebar-name { font-size: 13px; font-weight: 700; color: var(--text-primary); line-height: 1.2; }
 .sidebar-role { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
@@ -904,13 +919,32 @@ button { font-family: var(--font); cursor: pointer; transition: all 0.15s; }
   font-family: inherit; font-size: 13px; background: var(--surface); color: var(--text-primary);
 }
 
-/* ─── Google sign-in button ──────────────────────────────────────────────────── */
-.auth-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0; color: var(--text-muted); font-size: 12px; text-transform: uppercase; }
-.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
-.btn-google {
-  width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px;
-  padding: 10px 16px; border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface); color: var(--text-primary); font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+/* ─── Google sign-in button & "or" divider ───────────────────────────────────── */
+.auth-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 18px 0;
+  color: var(--text-muted);
+  font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.6px;
 }
-.btn-google:hover:not(:disabled) { background: var(--bg-alt); }
-.btn-google:disabled { opacity: 0.6; cursor: default; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+.btn-google {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: var(--surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 10px 22px;
+  border-radius: var(--radius);
+  font-size: 13.5px; font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.btn-google svg { flex-shrink: 0; }
+.btn-google:hover:not(:disabled) { background: var(--bg-alt); border-color: var(--text-muted); }
+.btn-google:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Spinner used by the Refresh button */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
+.btn-ghost:disabled { opacity: 0.7; cursor: not-allowed; }

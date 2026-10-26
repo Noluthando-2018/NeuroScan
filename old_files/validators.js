@@ -1,110 +1,89 @@
-// Shared form helpers: T.C. Kimlik No, Case ID, random Case ID generation
+// Shared form validators — a port of the mobile app's validators.dart so web and mobile follow the same rules.
+// Every validator returns an error message (string) or null when the value is valid.
 
-export const tcFormat = (value) =>
-  String(value ?? "").replace(/\D/g, "").slice(0, 11);
+// Any Unicode letter (ç, ğ, ı, İ, ö, ş, ü ...) + combining marks, with single space / apostrophe / hyphen separators.
+const NAME_RE  = /^\p{L}[\p{L}\p{M}]*(?:[ '’-]\p{L}[\p{L}\p{M}]*)*$/u;
+const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
-/** Returns an error message, or null when the T.C. Kimlik No is valid. */
-export const validateTc = (value) => {
-  const tc = String(value ?? "").trim();
+// ── Input filters: use inside onChange so invalid characters can never be typed ──
+export const filterName   = (v) => v.replace(/[^\p{L}\p{M} '’-]/gu, "");
+export const filterDigits = (v, max) => v.replace(/\D/g, "").slice(0, max);
+export const filterTc     = (v) => filterDigits(v, 11);
+export const filterAge    = (v) => filterDigits(v, 3);
+export const filterCaseId = (v) => v.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 12);
 
-  if (!tc) return "T.C. Kimlik No is required.";
-
-  if (!/^[1-9]\d{10}$/.test(tc)) {
-    return "T.C. Kimlik No must have 11 digits and cannot start with 0.";
-  }
-
-  const digits = tc.split("").map(Number);
-
-  const odd  = digits[0] + digits[2] + digits[4] + digits[6] + digits[8];
-  const even = digits[1] + digits[3] + digits[5] + digits[7];
-
-  const tenth    = (((odd * 7 - even) % 10) + 10) % 10;
-  const eleventh = digits.slice(0, 10).reduce((sum, digit) => sum + digit, 0) % 10;
-
-  if (digits[9] !== tenth || digits[10] !== eleventh) {
-    return "Please enter a valid T.C. Kimlik No.";
-  }
-
+// ── Validators ──
+export function validateName(value, label = "This field") {
+  const v = (value ?? "").trim();
+  if (!v) return `${label} cannot be empty.`;
+  if (v.length < 2) return `${label} must be at least 2 characters.`;
+  if (!NAME_RE.test(v)) return `${label} can only contain letters.`;
   return null;
-};
-
-export const caseIdFormat = (value) =>
-  String(value ?? "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 12).toUpperCase();
-
-/** Returns an error message, or null when the Case ID looks valid. */
-export const validateCaseId = (value) => {
-  const caseId = String(value ?? "").trim();
-
-  if (!caseId) return "Case ID is required.";
-  if (caseId.length < 4) return "Please enter a valid Case ID.";
-
-  return null;
-};
-
-// 32 characters without the look-alikes I, O, 0, 1  (256 % 32 === 0 -> no modulo bias)
-const CASE_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-/**
- * Cryptographically random Case ID, e.g. "C7K2M9QX" (8 characters, 32^7 combinations).
- * Case IDs are the second secret a patient needs to link a case, so they must not be guessable
- * (the old Date.now()-based IDs were sequential).
- */
-export function generateCaseId(length = 8) {
-  const bytes = new Uint8Array(length - 1);
-  crypto.getRandomValues(bytes);
-  return "C" + Array.from(bytes, (b) => CASE_ID_ALPHABET[b % CASE_ID_ALPHABET.length]).join("");
 }
 
-/** Returns an error message, or null when the password is valid. */
-export const validateNewPassword = (password) => {
-  if (!password) return "New password is required.";
-  if (password.length < 8) return "Password must be at least 8 characters long.";
-  if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-    return "Password must contain at least one letter and one number.";
-  }
+export function validateEmail(value) {
+  const v = (value ?? "").trim();
+  if (!v) return "Email cannot be empty.";
+  if (!EMAIL_RE.test(v)) return "Please enter a valid email address.";
   return null;
-};
+}
 
-/** Returns an error message, or null when passwords match. */
-export const validateConfirmPassword = (confirm, password) => {
-  if (!confirm) return "Please confirm your password.";
-  if (confirm !== password) return "Passwords do not match.";
+/** Registration: at least 8 characters, at least 1 letter and 1 digit. */
+export function validateNewPassword(value) {
+  const v = value ?? "";
+  if (!v) return "Password cannot be empty.";
+  if (v.length < 8) return "Password must be at least 8 characters.";
+  if (!/\p{L}/u.test(v)) return "Password must contain at least one letter.";
+  if (!/\d/.test(v)) return "Password must contain at least one number.";
   return null;
-};
+}
 
-// /** Takes multiple validation results and returns the first non-null error message, or null. */
-// export const firstError = (...errors) => {
-//   return errors.find((err) => err !== null && err !== undefined) || null;
-// };
-
-/** Takes multiple validation results and returns the first non-null error message, or null. */
-export const firstError = (...errors) => {
-  return errors.find((err) => err !== null && err !== undefined) || null;
-};
-
-/** Filters name input to allow letters (including Turkish), spaces, hyphens, and apostrophes. */
-export const filterName = (value) => {
-  return String(value ?? "").replace(/[^a-zA-ZğüşıöçĞÜŞİÖÇ\s'-]/g, "");
-};
-
-/** Validates a first or last name. */
-export const validateName = (value, fieldName = "Name") => {
-  const name = String(value ?? "").trim();
-  if (!name) return `${fieldName} is required.`;
-  if (name.length < 2) return `${fieldName} must be at least 2 characters long.`;
+export function validateConfirmPassword(value, original) {
+  if (!value) return "Please repeat your password.";
+  if (value !== original) return "Passwords do not match.";
   return null;
-};
+}
 
-/** Joins first and last name nicely with a space. */
-export const joinName = (firstName, lastName) => {
-  return [firstName, lastName].map(n => String(n ?? "").trim()).filter(Boolean).join(" ");
-};
+function isValidTc(v) {
+  const d = v.split("").map(Number);
+  const odd  = d[0] + d[2] + d[4] + d[6] + d[8];
+  const even = d[1] + d[3] + d[5] + d[7];
+  const tenth    = (((odd * 7 - even) % 10) + 10) % 10;   // JS % can be negative, Dart's cannot
+  const eleventh = d.slice(0, 10).reduce((a, b) => a + b, 0) % 10;
+  return d[9] === tenth && d[10] === eleventh;
+}
 
-/** Returns an error message, or null when the email is valid. */
-export const validateEmail = (email) => {
-  const value = String(email ?? "").trim();
-  if (!value) return "Email address is required.";
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(value)) return "Please enter a valid email address.";
+/** T.C. Kimlik No: 11 digits, first digit not 0, last two digits satisfy the checksum algorithm. */
+export function validateTc(value) {
+  const v = (value ?? "").trim();
+  if (!v) return "T.C. Kimlik No cannot be empty.";
+  if (!/^[1-9]\d{10}$/.test(v)) return "T.C. Kimlik No must be 11 digits and cannot start with 0.";
+  if (!isValidTc(v)) return "Please enter a valid T.C. Kimlik No.";
   return null;
-};
+}
+
+export function validateAge(value) {
+  const n = parseInt(String(value ?? "").trim(), 10);
+  if (Number.isNaN(n)) return "Please enter the age.";
+  if (n < 0 || n > 120) return "Please enter a valid age (0–120).";
+  return null;
+}
+
+export function validateCaseId(value) {
+  const v = (value ?? "").trim();
+  if (!v) return "Case ID cannot be empty.";
+  if (v.length < 4) return "Please enter a valid Case ID.";
+  return null;
+}
+
+/** First error found in a list of `null | string` results, or null if all passed. */
+export const firstError = (...errors) => errors.find(Boolean) ?? null;
+
+export const joinName = (first, last) => `${first.trim()} ${last.trim()}`.trim();
+
+/** Best-effort split of a full name (e.g. from Google) into [first, last]. Last word = surname. */
+export function splitFullName(full) {
+  const parts = (full ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return [parts[0] ?? "", ""];
+  return [parts.slice(0, -1).join(" "), parts[parts.length - 1]];
+}

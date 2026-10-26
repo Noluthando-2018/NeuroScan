@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { ALZ_SEQUENCES, ALZ_PIPELINE, ALZHEIMER_DATA, CONDITIONS, conditionOf } from "../data/conditions";
 import {
   filterName, filterTc, filterAge, validateName, validateTc, validateAge,
   firstError, joinName,
@@ -41,7 +42,18 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
   const [overallProgress, setOverallProgress] = useState(0);
   const [done, setDone]               = useState(false);
   const [saving, setSaving]           = useState(false);
+  const [savedNoMri, setSavedNoMri]     = useState(false);   // follow-up visit saved without any scans
   const [error, setError]             = useState("");
+  // Condition: new cases choose it; a follow-up visit always uses its case's condition.
+  const [newCondition, setNewCondition] = useState("tumor");
+  const condition = isFollowUp ? conditionOf(followUpCase) : newCondition;
+  const isAlz     = condition === "alzheimer";
+  const sequences = isAlz ? ALZ_SEQUENCES : MRI_SEQUENCES;   // sequences required for this condition
+  const changeCondition = (next) => {
+    if (next === newCondition) return;
+    setNewCondition(next);
+    setFiles({}); setFileProgress({}); setError("");        // the required sequences differ per condition
+  };
 
   const updateInfo = (k, v) => setPatientInfo(f => ({ ...f, [k]: v }));
 
@@ -106,9 +118,10 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
     const matched   = {};
     const unmatched = [];
 
+    const activeKeys = new Set(sequences.map(s => s.key));
     for (const file of niiFiles) {
       const key = matchFileToSequence(file.name);
-      if (key) matched[key] = file;
+      if (key && activeKeys.has(key)) matched[key] = file;
       else unmatched.push(file.name);
     }
 
@@ -128,10 +141,10 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
   };
 
   const uploadedCount = Object.keys(files).length;
-  const allUploaded   = uploadedCount === MRI_SEQUENCES.length;
-  const seqKeys       = MRI_SEQUENCES.map(s => s.key);
+  const allUploaded   = uploadedCount === sequences.length;
+  const seqKeys       = sequences.map(s => s.key);
 
-  const PIPELINE = [
+  const TUMOR_PIPELINE = [
     { id: 1, label: "Preprocessing",      sub: "Preprocessing MRI Scans...",           range: [10, 30] },
     { id: 2, label: "Upload Complete",    sub: "Files received successfully",           range: [30, 30] },
     { id: 3, label: "Classification",     sub: "Running tumor classification model...", range: [30, 50] },
@@ -140,15 +153,37 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
     { id: 6, label: "Explainable AI",     sub: "Generating visual explanation...",      range: [85, 95] },
     { id: 7, label: "Report Generation",  sub: "Saving results...",                     range: [95, 100] },
   ];
+  const PIPELINE = isAlz ? ALZ_PIPELINE : TUMOR_PIPELINE;
 
   const startAnalysis = async () => {
     const infoError = validateStep1();
     if (infoError) { setError(infoError); return; }
+
+    // MRI is compulsory only for the first visit (new case). A follow-up visit can be saved without any scans:
+    // it only records the date and notes, and no new analysis is run.
+    if (isFollowUp && uploadedCount === 0) {
+      setError(""); setSaving(true);
+      const { error: visitErr } = await supabase.from("visits").insert({
+        case_id: followUpCase.id,
+        visit_date: patientInfo.scanDate,
+        notes: patientInfo.notes.trim() || null,
+        status: "Done",
+      });
+      if (visitErr) { setError("Failed to save visit: " + visitErr.message); setSaving(false); return; }
+      setSaving(false);
+      setSavedNoMri(true); setStep(3); window.scrollTo(0, 0);
+      onCaseAdded();
+      toast.success("Visit saved", "The visit was saved without MRI scans, so no new analysis was run.");
+      return;
+    }
+
     if (!allUploaded) {
-      const missing = MRI_SEQUENCES
+      const missing = sequences
         .filter(s => !files[s.key])
         .map(s => s.label);
-      setError(`Missing ${missing.length} sequence${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. Please upload these before starting analysis.`);
+      setError(`Missing ${missing.length} sequence${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. ${isFollowUp
+        ? "Upload all sequences to run a new analysis, or clear the uploads to save this visit without MRI."
+        : "Please upload these before starting analysis."}`);
       return;
     }
 
@@ -172,8 +207,14 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
         status: "Processing",
         doctor_id: session.user.id,
         patient_id: null,
+        ...(isAlz ? { condition: "alzheimer" } : {}),
       });
-      if (caseErr) { setError("Failed to save case: " + caseErr.message); setSaving(false); return; }
+      if (caseErr) {
+        setError(/condition/i.test(caseErr.message)
+          ? "The database is not ready for Alzheimer's cases yet. Run supabase_setup.sql in Supabase first."
+          : "Failed to save case: " + caseErr.message);
+        setSaving(false); return;
+      }
 
       // Store the patient's T.C. Kimlik No (hashed/protected server-side) so the patient can later link this case
       // with Case ID + T.C. If this fails, roll back the half-created case.
@@ -201,7 +242,7 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
 
     // Upload real files to Supabase Storage
     const uploadRecords = [];
-    for (const s of MRI_SEQUENCES) {
+    for (const s of sequences) {
       const file = files[s.key];
       if (!file) continue;
       const path = `${session.user.id}/${caseId}/${visitId}/${s.key}_${file.name}`;
@@ -226,21 +267,34 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
     let stepIdx = 0, prog = 0;
     const run = async () => {
       if (stepIdx >= PIPELINE.length) {
-        await supabase.from("cases").update({ status: "Done", risk: "Moderate" }).eq("id", caseId);
-        await supabase.from("visits").update({ status: "Done", risk: "Moderate" }).eq("id", visitId);
-        await supabase.from("analysis_results").insert({
-          case_id: caseId, visit_id: visitId, tumor_type: "Glioblastoma", grade: "High-grade (IV)",
-          idh_status: "Wild-type", mgmt_status: "Unmethylated",
-          survival_estimate: "Estimated: 10–16 months",
-          prob_glioblastoma: 78, prob_astrocytoma: 15, prob_oligodendroglioma: 7,
-        });
-        await supabase.from("xai_features").insert([
-          { case_id: caseId, visit_id: visitId, feature_name: "Tumor Volume", importance_score: 92 },
-          { case_id: caseId, visit_id: visitId, feature_name: "Age",          importance_score: 78 },
-          { case_id: caseId, visit_id: visitId, feature_name: "ADC Entropy",  importance_score: 65 },
-          { case_id: caseId, visit_id: visitId, feature_name: "rCBV Mean",    importance_score: 54 },
-          { case_id: caseId, visit_id: visitId, feature_name: "FLAIR Ratio",  importance_score: 41 },
-        ]);
+        const risk = isAlz ? ALZHEIMER_DATA.risk : "Moderate";
+        await supabase.from("cases").update({ status: "Done", risk }).eq("id", caseId);
+        await supabase.from("visits").update({ status: "Done", risk }).eq("id", visitId);
+        if (isAlz) {
+          // Placeholder values until the Alzheimer's model is connected (same as the tumor sample below).
+          await supabase.from("analysis_results").insert({
+            case_id: caseId, visit_id: visitId, tumor_type: ALZHEIMER_DATA.diagnosis, grade: ALZHEIMER_DATA.stage,
+            idh_status: "N/A", mgmt_status: "N/A", survival_estimate: "N/A",
+            prob_glioblastoma: 0, prob_astrocytoma: 0, prob_oligodendroglioma: 0,
+          });
+          await supabase.from("xai_features").insert(
+            ALZHEIMER_DATA.xaiFeatures.map(f => ({ case_id: caseId, visit_id: visitId, feature_name: f.name, importance_score: f.importance }))
+          );
+        } else {
+          await supabase.from("analysis_results").insert({
+            case_id: caseId, visit_id: visitId, tumor_type: "Glioblastoma", grade: "High-grade (IV)",
+            idh_status: "Wild-type", mgmt_status: "Unmethylated",
+            survival_estimate: "Estimated: 10–16 months",
+            prob_glioblastoma: 78, prob_astrocytoma: 15, prob_oligodendroglioma: 7,
+          });
+          await supabase.from("xai_features").insert([
+            { case_id: caseId, visit_id: visitId, feature_name: "Tumor Volume", importance_score: 92 },
+            { case_id: caseId, visit_id: visitId, feature_name: "Age",          importance_score: 78 },
+            { case_id: caseId, visit_id: visitId, feature_name: "ADC Entropy",  importance_score: 65 },
+            { case_id: caseId, visit_id: visitId, feature_name: "rCBV Mean",    importance_score: 54 },
+            { case_id: caseId, visit_id: visitId, feature_name: "FLAIR Ratio",  importance_score: 41 },
+          ]);
+        }
         setDone(true); onCaseAdded(); toast.success('Analysis complete!', 'The case has been saved and results are ready to review.'); return;
       }
       const s = PIPELINE[stepIdx];
@@ -286,6 +340,23 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
       {step === 1 && (
         <div className="card">
           <h3>{isFollowUp ? "Visit Information" : "Patient Information"}</h3>
+
+          {isFollowUp ? (
+            <p className="hint" style={{ marginBottom: 16 }}>
+              Condition: <span className={`badge ${CONDITIONS[condition].badge}`}>{CONDITIONS[condition].icon} {CONDITIONS[condition].label}</span>
+            </p>
+          ) : (
+            <div className="form-group">
+              <label>Condition to Analyze</label>
+              <div className="role-toggle">
+                {Object.values(CONDITIONS).map(c => (
+                  <button key={c.key} type="button" className={condition === c.key ? "active" : ""} onClick={() => changeCondition(c.key)}>
+                    {c.icon} {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
 
 
@@ -346,8 +417,20 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
 
       {step === 2 && (
         <div className="card">
-          <h3>Upload 14 × 3D MRI Sequences <span className="badge badge-blue">NIfTI Format</span></h3>
+          <h3>Upload {sequences.length} × 3D MRI Sequence{sequences.length > 1 ? "s" : ""} <span className="badge badge-blue">NIfTI Format</span></h3>
           <p className="hint">Accepted formats: <code>.nii</code>, <code>.nii.gz</code></p>
+          {isAlz && (
+            <p className="hint">Alzheimer's analysis uses structural MRI: a 3D T1-weighted scan (MPRAGE) and a FLAIR scan.</p>
+          )}
+          {isFollowUp && (
+            <div style={{
+              background: "var(--accent-dim)", border: "1px solid var(--accent-mid)", borderRadius: "var(--radius)",
+              padding: "10px 14px", fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, lineHeight: 1.5,
+            }}>
+              <strong>MRI is optional for follow-up visits.</strong> Skip it to save only the visit date and notes,
+              or upload all sequences to run a new analysis.
+            </div>
+          )}
 
           {/* Folder upload zone */}
           <label style={{
@@ -378,19 +461,19 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
             />
             <div style={{ fontSize: 36, marginBottom: 10 }}>📂</div>
             <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text-primary)", marginBottom: 4 }}>
-              {uploadedCount > 0 ? `${uploadedCount} / ${MRI_SEQUENCES.length} files matched` : "Upload Patient Folder"}
+              {uploadedCount > 0 ? `${uploadedCount} / ${sequences.length} files matched` : "Upload Patient Folder"}
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", marginBottom: 12 }}>
               Click to select the entire patient folder — files will be matched automatically by filename
             </div>
-            {uploadedCount > 0 && uploadedCount < MRI_SEQUENCES.length && (
+            {uploadedCount > 0 && uploadedCount < sequences.length && (
               <div style={{ fontSize: 12, color: "var(--warning)", fontWeight: 600 }}>
-                ⚠ {MRI_SEQUENCES.length - uploadedCount} files not yet matched — use individual slots below
+                ⚠ {sequences.length - uploadedCount} files not yet matched — use individual slots below
               </div>
             )}
-            {uploadedCount === MRI_SEQUENCES.length && (
+            {uploadedCount === sequences.length && (
               <div style={{ fontSize: 13, color: "var(--success)", fontWeight: 700 }}>
-                ✓ All 14 sequences matched and ready
+                ✓ All {sequences.length} sequences matched and ready
               </div>
             )}
             {uploadedCount === 0 && (
@@ -408,11 +491,11 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
           </div>
 
           <div className="upload-count-badge">
-            <strong>{uploadedCount} / {MRI_SEQUENCES.length}</strong> sequences uploaded
-            {uploadedCount === MRI_SEQUENCES.length && <span style={{ color: "var(--success)", marginLeft: 10, fontWeight: 700 }}>✓ All ready</span>}
+            <strong>{uploadedCount} / {sequences.length}</strong> sequences uploaded
+            {uploadedCount === sequences.length && <span style={{ color: "var(--success)", marginLeft: 10, fontWeight: 700 }}>✓ All ready</span>}
           </div>
           <div className="mri-upload-grid">
-            {MRI_SEQUENCES.map(s => (
+            {sequences.map(s => (
               <div key={s.key} className={`mri-seq-card ${files[s.key] ? "uploaded" : ""} ${s.key === "SEG" ? "seg-card" : ""}`}>
                 <div className="seq-label">{s.label}</div>
                 <div className="seq-hint">{s.hint}</div>
@@ -431,16 +514,41 @@ export default function AddNewCase({ nav, session, onCaseAdded, toast, followUpC
               </div>
             ))}
           </div>
+          {isFollowUp && uploadedCount > 0 && !allUploaded && (
+            <div style={{ marginTop: 16, fontSize: 13, color: "var(--warning, #b7791f)" }}>
+              ⚠ {sequences.length - uploadedCount} sequences still missing. Upload them all to run the analysis, or{" "}
+              <span style={{ textDecoration: "underline", cursor: "pointer", fontWeight: 600 }}
+                onClick={() => { setFiles({}); setFileProgress({}); }}>clear the uploads</span> to save the visit without MRI.
+            </div>
+          )}
           <div style={{ marginTop: 24, display: "flex", gap: 12 }}>
             <button className="btn-ghost" onClick={() => setStep(1)}>← Back</button>
-            <button className="btn-primary" onClick={startAnalysis} disabled={!allUploaded || saving} style={{ opacity: allUploaded && !saving ? 1 : 0.5 }}>
-              {saving ? "⬆ Uploading files to server…" : "🔬 Start Analysis"}
-            </button>
+            {(() => {
+              const skipMri  = isFollowUp && uploadedCount === 0;
+              const canSubmit = !saving && (skipMri || allUploaded);
+              return (
+                <button className="btn-primary" onClick={startAnalysis} disabled={!canSubmit} style={{ opacity: canSubmit ? 1 : 0.5 }}>
+                  {saving ? (skipMri ? "Saving visit…" : "⬆ Uploading files to server…") : skipMri ? "💾 Save Visit without MRI" : "🔬 Start Analysis"}
+                </button>
+              );
+            })()}
           </div>
         </div>
       )}
 
-      {step === 3 && (
+      {step === 3 && savedNoMri && (
+        <div className="card processing-card">
+          <h3>✅ Visit Saved</h3>
+          <p className="hint">This follow-up visit was saved without MRI scans, so no new analysis was run.
+            You can add the scans to a later visit at any time.</p>
+          <div style={{ marginTop: 24 }}>
+            <button className="btn-primary" style={{ marginRight: 10 }} onClick={() => nav("doctorDashboard")}>📅 Back to Case</button>
+            <button className="btn-ghost" onClick={() => nav("doctorSelect")}>📋 Go to Case List</button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && !savedNoMri && (
         <div className="card processing-card">
           <h3>{done ? "✅ Analysis Complete" : "🔬 Analyzing MRI Scans…"}</h3>
           {!done && <p className="hint">Do not close this page while processing.</p>}

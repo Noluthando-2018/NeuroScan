@@ -1,13 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { jsPDF } from "jspdf";
 import { supabase } from "../supabaseClient";
 import Brain3DViewer from "../features/Brain3DViewer";
 import MarkerItem from "../components/MarkerItem";
 import VisitTimeline from "../components/VisitTimeline";
 import { useVisits } from "../hooks/useVisits";
+import { conditionOf, CONDITIONS, ALZHEIMER_DATA, VISIBILITY_COPY } from "../data/conditions";
 
 export default function DoctorDashboard({ patient, data, nav, session, patientVisibility, setPatientVisibility, toast, onAddVisit }) {
   const [activeTab, setActiveTab] = useState("results");
+  const condition = conditionOf(patient);
+  const isAlz     = condition === "alzheimer";
+  const alz       = ALZHEIMER_DATA;
   const [saving, setSaving]       = useState(false);
   const [savedOk, setSavedOk]     = useState(false);
 
@@ -56,25 +60,32 @@ export default function DoctorDashboard({ patient, data, nav, session, patientVi
     doc.line(20, 56, 190, 56);
     doc.setFontSize(14); doc.text("AI Prediction Results", 20, 65);
     doc.setFontSize(11);
-    doc.text(`Tumor Type: ${data.tumorType}`, 20, 75);
-    doc.text(`Grade: ${data.grade}`, 20, 83);
-    doc.text(`IDH: ${data.idh}`, 20, 91);
-    doc.text(`MGMT: ${data.mgmt}`, 20, 99);
+    if (isAlz) {
+      doc.text(`Diagnosis: ${alz.diagnosis} (${alz.probabilities[0].value}% confidence)`, 20, 75);
+      doc.text(`Stage: ${alz.stage}`, 20, 83);
+      doc.text(`Hippocampal Volume: ${alz.markers[1].value}`, 20, 91);
+      doc.text(`Entorhinal Cortex: ${alz.markers[2].value}`, 20, 99);
+    } else {
+      doc.text(`Tumor Type: ${data.tumorType}`, 20, 75);
+      doc.text(`Grade: ${data.grade}`, 20, 83);
+      doc.text(`IDH: ${data.idh}`, 20, 91);
+      doc.text(`MGMT: ${data.mgmt}`, 20, 99);
+    }
     doc.setFontSize(9); doc.setTextColor(150);
     doc.text("AI-assisted report. Must be reviewed by a qualified physician.", 20, 240);
     doc.save(`NeuroScan_Case_${patient.id}_Report.pdf`);
   };
 
   const VISIBILITY_OPTIONS = [
-    { key: "scan_findings",            label: "Scan Findings",            desc: "General description of detected region",   category: "basic"     },
-    { key: "growth_pattern",           label: "Growth Pattern",           desc: "Tumor growth characteristics",             category: "basic"     },
-    { key: "treatment_considerations", label: "Treatment Considerations", desc: "General treatment info",                   category: "basic"     },
-    { key: "surgical_assessment",      label: "Surgical Assessment",      desc: "Resectability and surgery info",            category: "clinical"  },
-    { key: "next_steps",               label: "Next Steps",               desc: "Follow-up and appointment guidance",        category: "basic"     },
-    { key: "tumor_type",               label: "Tumor Type & Name",        desc: "AI-predicted tumor classification",         category: "clinical"  },
-    { key: "clinical_markers",         label: "Clinical Markers",         desc: "IDH, MGMT, tumor grade",                   category: "clinical"  },
-    { key: "xai_explanation",          label: "AI Explanation (XAI)",     desc: "Feature importance chart",                  category: "clinical"  },
-  ];
+    { key: "scan_findings",            category: "basic"    },
+    { key: "growth_pattern",           category: "basic"    },
+    { key: "treatment_considerations", category: "basic"    },
+    { key: "surgical_assessment",      category: "clinical" },
+    { key: "next_steps",               category: "basic"    },
+    { key: "tumor_type",               category: "clinical" },
+    { key: "clinical_markers",         category: "clinical" },
+    { key: "xai_explanation",          category: "clinical" },
+  ].map(o => ({ ...o, ...VISIBILITY_COPY[condition][o.key] }));   // wording depends on the condition
 
   const categoryColor = { basic: "badge-green", clinical: "badge-blue", sensitive: "badge-red" };
   const categoryLabel = { basic: "Basic", clinical: "Clinical", sensitive: "Sensitive" };
@@ -83,7 +94,7 @@ export default function DoctorDashboard({ patient, data, nav, session, patientVi
   return (
     <div className="page">
       <div className="page-header">
-        <div><h2>Case Results — {patient.id}</h2><p className="subtitle">AI-assisted analysis report</p></div>
+        <div><h2>Case Results — {patient.id}</h2><p className="subtitle">AI-assisted analysis report <span className={`badge ${CONDITIONS[condition].badge}`} style={{ marginLeft: 8 }}>{CONDITIONS[condition].icon} {CONDITIONS[condition].label}</span></p></div>
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn-ghost" onClick={() => nav("doctorSelect")}>⬅ Back</button>
           <button className="btn-primary" onClick={generatePDF}>📄 Export PDF</button>
@@ -136,11 +147,53 @@ export default function DoctorDashboard({ patient, data, nav, session, patientVi
       {activeTab === "viewer" && !visitsLoading && (
         <Brain3DViewer
           key={selectedVisit?.id ?? "legacy"}
-          caseId={patient.id} visitId={selectedVisit?.id} visitLabel={visitLabel} session={session}
+          caseId={patient.id} visitId={selectedVisit?.id} visitLabel={visitLabel} session={session} condition={condition}
         />
       )}
 
-      {activeTab === "results" && (<>
+      {activeTab === "results" && isAlz && (<>
+        <div className="results-grid">
+          <div className="card">
+            <h3>Alzheimer's Prediction</h3>
+            <div className="tumor-type-display">
+              <span className="tumor-name">{alz.diagnosis}</span>
+              <span className="tumor-prob">{alz.probabilities[0].value}% confidence</span>
+            </div>
+            <div className="prob-bars">
+              {alz.probabilities.map((p, i) => (
+                <div key={i} className="prob-row">
+                  <span className="prob-label">{p.name}</span>
+                  <div className="prob-bar-bg"><div className="prob-bar-fill" style={{ width: `${p.value}%`, opacity: i === 0 ? 1 : 0.6 - i * 0.15 }} /></div>
+                  <span className="prob-pct">{p.value}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="card">
+            <h3>Brain Biomarkers</h3>
+            <div className="marker-grid">
+              {alz.markers.map((m, i) => <MarkerItem key={i} label={m.label} value={m.value} alert={m.alert} />)}
+            </div>
+          </div>
+          <div className="card xai-card">
+            <h3>Explainable AI — Feature Importance</h3>
+            <p className="hint">Features contributing most to the AI prediction:</p>
+            {alz.xaiFeatures.map((f, i) => (
+              <div key={i} className="xai-row">
+                <span className="xai-label">{f.name}</span>
+                <div className="xai-bar-bg"><div className="xai-bar-fill" style={{ width: `${f.importance}%` }} /></div>
+                <span className="xai-pct">{f.importance}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="warning-banner">
+          ⚠️ <strong>Important:</strong> This output is AI-assisted and must be reviewed by a qualified physician before clinical use.
+          Sample values are shown until the Alzheimer's model is connected.
+        </div>
+      </>)}
+
+      {activeTab === "results" && !isAlz && (<>
         <div className="results-grid">
           <div className="card">
             <h3>Tumor Prediction</h3>

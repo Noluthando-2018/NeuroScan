@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "../supabaseClient";
 
-export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
+export default function Brain3DViewer({ caseId, visitId, visitLabel, session, condition = "tumor" }) {
+  const isAlz = condition === "alzheimer";   // Alzheimer's: T1 only, no tumor segmentation
   const canvasRef   = useRef(null);
   const nv           = useRef(null);
   const [loading, setLoading]     = useState(true);
@@ -9,6 +10,7 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
   const [colormap, setColormap]   = useState("gray");
   const [showSeg, setShowSeg]     = useState(true);
   const [sliceType, setSliceType] = useState(2); // 2=render, 0=axial, 1=coronal, 3=sagittal
+  const [loadedUrls, setLoadedUrls] = useState(null);
 
   useEffect(() => {
     loadNiiVue();
@@ -20,7 +22,7 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
           canvasRef.current.width  = canvasRef.current.offsetWidth;
           canvasRef.current.height = canvasRef.current.offsetHeight;
           nv.current.resizeListener();
-        } catch { /* ignore */ }
+        } catch(e) {}
       }
     });
     if (canvasRef.current?.parentElement) {
@@ -29,9 +31,8 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
 
     return () => {
       observer.disconnect();
-      if (nv.current) { try { nv.current.closeDrawing(); } catch { /* ignore */ } }
+      if (nv.current) { try { nv.current.closeDrawing(); } catch(e){} }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseId, visitId]);
 
   const loadNiiVue = async () => {
@@ -67,7 +68,7 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
                 } else {
                   // Try to find it in window keys
                   const key = Object.keys(window).find(k => {
-                    try { return typeof window[k] === 'function' && window[k].toString().includes('attachToCanvas'); } catch { return false; }
+                    try { return typeof window[k] === 'function' && window[k].toString().includes('attachToCanvas'); } catch(e) { return false; }
                   });
                   if (key) { window._NiivueClass = window[key]; resolve(); }
                   else reject(new Error("Niivue class not found in window after script load"));
@@ -93,34 +94,40 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
         .from("mri_uploads")
         .select("sequence_name, file_url")
         .eq("case_id", caseId)
-        .in("sequence_name", ["T1", "SEG"]);
+        .in("sequence_name", isAlz ? ["T1"] : ["T1", "SEG"]);
       if (visitId) uploadsQuery = uploadsQuery.eq("visit_id", visitId);
       const { data: uploads } = await uploadsQuery;
 
-      if (!uploads || uploads.length < 2) {
-        setError("MRI files not found for this case. Please make sure T1 and Tumor Segmentation were uploaded.");
+      if (!uploads || uploads.length < (isAlz ? 1 : 2)) {
+        setError(isAlz
+          ? "MRI files not found for this case. Please make sure the T1 scan was uploaded."
+          : "MRI files not found for this case. Please make sure T1 and Tumor Segmentation were uploaded.");
         setLoading(false); return;
       }
 
       const t1Row  = uploads.find(u => u.sequence_name === "T1");
       const segRow = uploads.find(u => u.sequence_name === "SEG");
 
-      if (!t1Row?.file_url || !segRow?.file_url) {
+      if (!t1Row?.file_url || (!isAlz && !segRow?.file_url)) {
         setError("File storage paths are missing. This case may have been created before file upload was enabled. Please add a new case with file uploads.");
         setLoading(false); return;
       }
 
       // Get signed URLs (1 hour expiry)
       const { data: t1Signed,  error: e1 } = await supabase.storage.from("mri-scans").createSignedUrl(t1Row.file_url,  3600);
-      const { data: segSigned, error: e2 } = await supabase.storage.from("mri-scans").createSignedUrl(segRow.file_url, 3600);
+      const { data: segSigned, error: e2 } = isAlz
+        ? { data: null, error: null }
+        : await supabase.storage.from("mri-scans").createSignedUrl(segRow.file_url, 3600);
 
-      if (e1 || e2 || !t1Signed?.signedUrl || !segSigned?.signedUrl) {
+      if (e1 || e2 || !t1Signed?.signedUrl || (!isAlz && !segSigned?.signedUrl)) {
         setError("Could not generate secure download links. Check Supabase Storage permissions.");
         setLoading(false); return;
       }
 
+      setLoadedUrls({ t1: t1Signed.signedUrl, seg: segSigned?.signedUrl ?? null });
+
       // Destroy previous instance if any
-      if (nv.current) { try { nv.current.closeDrawing(); } catch { /* ignore */ } nv.current = null; }
+      if (nv.current) { try { nv.current.closeDrawing(); } catch(e){} nv.current = null; }
 
       // Init NiiVue
       const nvInstance = new NiivueClass({
@@ -134,7 +141,7 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
       await nvInstance.attachToCanvas(canvasRef.current);
       await nvInstance.loadVolumes([
         { url: t1Signed.signedUrl,  colormap: "gray", opacity: 1.0 },
-        { url: segSigned.signedUrl, colormap: "red",  opacity: 0.6, cal_min: 0.5, cal_max: 1.5 },
+        ...(isAlz ? [] : [{ url: segSigned.signedUrl, colormap: "red", opacity: 0.6, cal_min: 0.5, cal_max: 1.5 }]),
       ]);
 
       nvInstance.setSliceType(2); // 3D render
@@ -221,6 +228,7 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
           ))}
         </div>
 
+        {!isAlz && (
         <button onClick={toggleSegmentation} style={{
           padding: "5px 14px", fontSize: 12, borderRadius: 6, cursor: "pointer",
           border: `1px solid ${showSeg ? "var(--danger)" : "var(--border)"}`,
@@ -230,6 +238,7 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
         }}>
           {showSeg ? "🔴 Hide Tumor" : "○ Show Tumor"}
         </button>
+        )}
 
         <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)" }}>
           Drag to rotate · Scroll to zoom · Right-click to pan
@@ -249,7 +258,7 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
               Loading MRI Volume…
             </div>
             <div style={{ color: "#4a6a80", fontSize: 12, marginBottom: 20 }}>
-              Fetching T1 scan and tumor segmentation
+              {isAlz ? "Fetching T1 scan" : "Fetching T1 scan and tumor segmentation"}
             </div>
             <div style={{
               width: 200, height: 4, background: "#1e2d3d",
@@ -306,10 +315,12 @@ export default function Brain3DViewer({ caseId, visitId, visitLabel }) {
             <div style={{ width: 12, height: 12, borderRadius: 2, background: "#aaa" }} />
             T1 Brain Volume
           </div>
+          {!isAlz && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#7a90a4" }}>
             <div style={{ width: 12, height: 12, borderRadius: 2, background: "#e74c3c" }} />
             Tumor Segmentation
           </div>
+          )}
           <div style={{ marginLeft: "auto", fontSize: 11, color: "#4a6a80" }}>
             Case {caseId}{visitLabel ? ` · ${visitLabel}` : ""} · NiiVue renderer
           </div>

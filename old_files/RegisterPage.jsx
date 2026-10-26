@@ -194,3 +194,4 @@ export default function RegisterPage({ nav, toast }) {
     </div>
   );
 }
+

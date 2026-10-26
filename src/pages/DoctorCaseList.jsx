@@ -1,17 +1,40 @@
 import { useState, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import StatCard from "../components/StatCard";
+import { conditionOf, CONDITIONS } from "../data/conditions";
 
 export default function DoctorCaseList({ cases, setSelectedCase, nav, onRefresh, toast }) {
   const [search, setSearch]       = useState("");
   const [activeTab, setActiveTab] = useState("active"); // "active" | "completed"
+  const [refreshing, setRefreshing] = useState(false);
+  const [conditionFilter, setConditionFilter] = useState("all"); // "all" | "tumor" | "alzheimer"
+
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    const [result] = await Promise.all([onRefresh(), new Promise(r => setTimeout(r, 500))]);   // keep the spinner visible briefly
+    setRefreshing(false);
+    if (result?.ok === false) toast.error("Refresh failed", result.message);
+    else toast.success("Cases refreshed", "Your case list is up to date.");
+  };
 
   const riskBadge   = r => ({ High: "badge-red", Moderate: "badge-orange", Low: "badge-green" }[r] || "badge-blue");
   const statusBadge = s => s === "Done" ? "badge-green" : "badge-blue";
 
-  // Split into active (Processing) and completed (Done)
-  const activeCases    = useMemo(() => cases.filter(c => c.status !== "Done"), [cases]);
-  const completedCases = useMemo(() => cases.filter(c => c.status === "Done"),  [cases]);
+  // Patients per condition (shown in the dropdown)
+  const conditionCounts = useMemo(() => ({
+    all:       cases.length,
+    tumor:     cases.filter(c => conditionOf(c) === "tumor").length,
+    alzheimer: cases.filter(c => conditionOf(c) === "alzheimer").length,
+  }), [cases]);
+
+  // Condition dropdown first, then split into active (Processing) and completed (Done)
+  const byCondition = useMemo(
+    () => conditionFilter === "all" ? cases : cases.filter(c => conditionOf(c) === conditionFilter),
+    [cases, conditionFilter]
+  );
+  const activeCases    = useMemo(() => byCondition.filter(c => c.status !== "Done"), [byCondition]);
+  const completedCases = useMemo(() => byCondition.filter(c => c.status === "Done"),  [byCondition]);
 
   // Apply search filter to whichever tab is visible
   const sourceCases = activeTab === "active" ? activeCases : completedCases;
@@ -42,7 +65,9 @@ export default function DoctorCaseList({ cases, setSelectedCase, nav, onRefresh,
           <p className="subtitle">Brain MRI cases assigned to you</p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn-ghost" onClick={onRefresh}>↻ Refresh</button>
+          <button className="btn-ghost" onClick={handleRefresh} disabled={refreshing}>
+            <span className={refreshing ? "spin" : ""} style={{ display: "inline-block" }}>↻</span> {refreshing ? "Refreshing…" : "Refresh"}
+          </button>
           <button className="btn-primary" onClick={() => nav("addCase")}>➕ Add New Case</button>
         </div>
       </div>
@@ -54,8 +79,9 @@ export default function DoctorCaseList({ cases, setSelectedCase, nav, onRefresh,
         <StatCard label="High Risk"   value={cases.filter(c => c.risk === "High").length}          icon="⚠️" />
       </div>
 
-      {/* Search bar */}
-      <div style={{ marginBottom: 16, position: "relative" }}>
+      {/* Search bar + condition dropdown */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "stretch" }}>
+      <div style={{ position: "relative", flex: "1 1 280px" }}>
         <span style={{
           position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)",
           fontSize: 16, color: "var(--text-muted)", pointerEvents: "none"
@@ -79,6 +105,21 @@ export default function DoctorCaseList({ cases, setSelectedCase, nav, onRefresh,
             fontSize: 16, color: "var(--text-muted)", padding: 0
           }}>✕</button>
         )}
+      </div>
+      <select
+        value={conditionFilter}
+        onChange={e => setConditionFilter(e.target.value)}
+        aria-label="Filter patients by condition"
+        style={{
+          width: "auto", minWidth: 220, padding: "10px 14px", fontSize: 14, fontFamily: "inherit",
+          border: "1px solid var(--border)", borderRadius: "var(--radius)",
+          background: "var(--surface)", color: "var(--text-primary)", cursor: "pointer",
+        }}
+      >
+        <option value="all">All patients ({conditionCounts.all})</option>
+        <option value="tumor">{CONDITIONS.tumor.icon} Brain Tumor patients ({conditionCounts.tumor})</option>
+        <option value="alzheimer">{CONDITIONS.alzheimer.icon} Alzheimer's patients ({conditionCounts.alzheimer})</option>
+      </select>
       </div>
 
       {/* Active / Completed tabs */}
@@ -119,16 +160,18 @@ export default function DoctorCaseList({ cases, setSelectedCase, nav, onRefresh,
         {filteredCases.length === 0 ? (
           <div className="empty-state">
             <div style={{ fontSize: 40 }}>
-              {search ? "🔍" : activeTab === "active" ? "📋" : "✅"}
+              {search || conditionFilter !== "all" ? "🔍" : activeTab === "active" ? "📋" : "✅"}
             </div>
             <p>
               {search
                 ? `No cases match "${search}".`
+                : conditionFilter !== "all"
+                  ? `No ${activeTab === "active" ? "active" : "completed"} ${CONDITIONS[conditionFilter].label} cases.`
                 : activeTab === "active"
                   ? "No active cases. Add your first case to get started."
                   : "No completed cases yet."}
             </p>
-            {!search && activeTab === "active" && (
+            {!search && conditionFilter === "all" && activeTab === "active" && (
               <button className="btn-primary" onClick={() => nav("addCase")} style={{ marginTop: 16 }}>
                 ➕ Add New Case
               </button>
@@ -152,7 +195,7 @@ export default function DoctorCaseList({ cases, setSelectedCase, nav, onRefresh,
                 {filteredCases.map(c => (
                   <tr key={c.id}>
                     <td><code>{c.id}</code></td>
-                    <td><strong>{c.patient_name}</strong></td>
+                    <td><strong>{c.patient_name}</strong> <span className={`badge ${CONDITIONS[conditionOf(c)].badge}`} style={{ marginLeft: 6 }} title={CONDITIONS[conditionOf(c)].label}>{CONDITIONS[conditionOf(c)].icon} {CONDITIONS[conditionOf(c)].short}</span></td>
                     <td>{c.age} / {c.sex}</td>
                     <td>{c.scan_date}</td>
                     <td><span className="badge badge-blue">{c.visits?.[0]?.count ?? 1}</span></td>

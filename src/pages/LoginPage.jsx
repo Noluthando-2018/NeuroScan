@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { supabase } from "../supabaseClient";
+import { setLoginIntent, clearLoginIntent } from "../utils/auth";
 
 export default function LoginPage({ nav }) {
   const [email, setEmail] = useState("");
@@ -7,6 +8,7 @@ export default function LoginPage({ nav }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [signingIn, setSigningIn] = useState(false);
+  const [role, setRole] = useState("doctor");   // "doctor" | "patient" — checked against the account after sign-in
 
   // Email/password login
   const handleLogin = async () => {
@@ -17,6 +19,7 @@ export default function LoginPage({ nav }) {
 
     setLoading(true);
     setError("");
+    setLoginIntent(role);
 
     try {
       const { error } = await supabase.auth.signInWithPassword({
@@ -25,6 +28,7 @@ export default function LoginPage({ nav }) {
       });
 
       if (error) {
+        clearLoginIntent();
         setError(
           error.message.includes("Invalid login")
             ? "Incorrect email or password. Please try again."
@@ -37,6 +41,7 @@ export default function LoginPage({ nav }) {
       // If that fails, App.jsx resets this page (the "key" changes), so it cannot get stuck here.
       setSigningIn(true);
     } catch (err) {
+      clearLoginIntent();
       console.error("Login error:", err);
       setError("Something went wrong. Please try again.");
     } finally {
@@ -44,12 +49,13 @@ export default function LoginPage({ nav }) {
     }
   };
 
-  // Google OAuth login
+  // Google OAuth login (patients only — App.jsx signs a doctor out again if they use it)
   const handleGoogleLogin = async () => {
     if (loading) return;
 
     setLoading(true);
     setError("");
+    setLoginIntent("patient");
 
     try {
       const redirectUrl = new URL(window.location.href);
@@ -65,11 +71,13 @@ export default function LoginPage({ nav }) {
       });
 
       if (error) {
+        clearLoginIntent();
         setError(error.message);
         setLoading(false);
       }
       // On success the browser leaves for Google, so the button stays disabled until then.
     } catch (err) {
+      clearLoginIntent();
       console.error("Google login error:", err);
       setError("Unable to start Google sign-in. Please try again.");
       setLoading(false);
@@ -123,7 +131,14 @@ export default function LoginPage({ nav }) {
         <div className="auth-header">
           <span className="auth-logo">⬡</span>
           <h1>NeuroScan</h1>
-          <p>Neurological Disease Analysis Platform</p>
+          <p>Brain MRI Analysis Platform</p>
+        </div>
+
+        <div className="role-toggle">
+          <button type="button" className={role === "doctor" ? "active" : ""} disabled={loading}
+            onClick={() => { setRole("doctor"); setError(""); }}>Doctor</button>
+          <button type="button" className={role === "patient" ? "active" : ""} disabled={loading}
+            onClick={() => { setRole("patient"); setError(""); }}>Patient</button>
         </div>
 
         {error && <div className="auth-error">⚠ {error}</div>}
@@ -160,6 +175,7 @@ export default function LoginPage({ nav }) {
           {loading ? "Please wait…" : "Login"}
         </button>
 
+        {role === "patient" ? (<>
         <div className="auth-divider"><span>or</span></div>
 
         <button type="button" className="btn-google" onClick={handleGoogleLogin} disabled={loading}>
@@ -171,6 +187,10 @@ export default function LoginPage({ nav }) {
           </svg>
           Continue with Google
         </button>
+        <p className="auth-note">Google sign-in is available for patients.</p>
+        </>) : (
+          <p className="auth-note">Doctors log in with their email and password.</p>
+        )}
 
         <p className="auth-link">
           Don't have an account? <span onClick={() => nav("register")}>Register</span>

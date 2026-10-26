@@ -918,3 +918,40 @@ button { font-family: var(--font); cursor: pointer; transition: all 0.15s; }
   padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius);
   font-family: inherit; font-size: 13px; background: var(--surface); color: var(--text-primary);
 }
+
+/* ─── Google sign-in button & "or" divider ───────────────────────────────────── */
+.auth-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 18px 0;
+  color: var(--text-muted);
+  font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+.btn-google {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: var(--surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 10px 22px;
+  border-radius: var(--radius);
+  font-size: 13.5px; font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.btn-google svg { flex-shrink: 0; }
+.btn-google:hover:not(:disabled) { background: var(--bg-alt); border-color: var(--text-muted); }
+.btn-google:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Spinner used by the Refresh button */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
+.btn-ghost:disabled { opacity: 0.7; cursor: not-allowed; }
+
+/* ─── Profile editing ────────────────────────────────────────────────────────── */
+.profile-wrap .card + .card, .profile-wrap .profile-info + .profile-info { margin-top: 16px; }
+.profile-edit-btn { margin-top: 18px; }
+.profile-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+.profile-section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px; }
+.auth-note { text-align: center; font-size: 12px; color: var(--text-muted); margin: 10px 0 0; line-height: 1.5; }
